@@ -48,6 +48,7 @@ export async function createProduct(input) {
   await productsRef().doc(id).set({
     name: input.name,
     detail: input.detail,
+    description: input.description,
     price: input.price,
     image: input.image,
     position,
@@ -64,6 +65,7 @@ export async function updateProduct(id, input) {
   await ref.update({
     name: input.name,
     detail: input.detail,
+    description: input.description,
     price: input.price,
     image: input.image,
   })
@@ -101,6 +103,7 @@ async function ensureStore() {
     batch.set(productsRef().doc(product.id), {
       name: product.name,
       detail: product.detail || "",
+      description: product.description || "",
       price: product.price,
       image: product.image || null,
       position: index,
@@ -125,6 +128,7 @@ function toProduct(snapshot) {
     id: snapshot.id,
     name: data.name,
     detail: data.detail || "",
+    description: data.description || "",
     price: data.price,
     image: data.image || null,
     position: Number.isFinite(data.position) ? data.position : 0,
