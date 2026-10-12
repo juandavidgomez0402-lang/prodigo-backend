@@ -33,9 +33,13 @@ export async function updateWhatsapp(whatsapp) {
   return readStore()
 }
 
-export async function updateCover(image) {
+export async function updateCover({ image, focusX, focusY }) {
   await ensureStore()
-  await storeRef().update({ "cover.image": image })
+  await storeRef().update({
+    "cover.image": image,
+    "cover.focusX": focusX,
+    "cover.focusY": focusY,
+  })
   return readStore()
 }
 

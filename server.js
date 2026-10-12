@@ -11,7 +11,7 @@ import {
 } from "./data/catalog.js"
 import { requireAuth } from "./lib/auth.js"
 import { sendError } from "./lib/http.js"
-import { parseCoverImage, parseNewProduct, parseProductPatch, parseWhatsapp } from "./lib/validate.js"
+import { parseCover, parseNewProduct, parseProductPatch, parseWhatsapp } from "./lib/validate.js"
 
 const app = express()
 const port = Number(process.env.PORT) || 3001
@@ -63,8 +63,7 @@ app.put("/api/whatsapp", requireAuth, async (req, res) => {
 
 app.put("/api/cover", requireAuth, async (req, res) => {
   try {
-    const image = parseCoverImage(req.body)
-    res.json(await updateCover(image))
+    res.json(await updateCover(parseCover(req.body)))
   } catch (error) {
     sendError(res, error)
   }
