@@ -55,6 +55,9 @@ export async function createProduct(input) {
     description: input.description,
     price: input.price,
     image: input.image,
+    available: input.available !== false,
+    discount: input.discount || 0,
+    readyDays: input.readyDays || 0,
     position,
   })
   return readStore()
@@ -72,6 +75,9 @@ export async function updateProduct(id, input) {
     description: input.description,
     price: input.price,
     image: input.image,
+    available: input.available !== false,
+    discount: input.discount || 0,
+    readyDays: input.readyDays || 0,
   })
   return readStore()
 }
@@ -110,6 +116,9 @@ async function ensureStore() {
       description: product.description || "",
       price: product.price,
       image: product.image || null,
+      available: product.available !== false,
+      discount: product.discount || 0,
+      readyDays: product.readyDays || 0,
       position: index,
     })
   })
@@ -135,6 +144,9 @@ function toProduct(snapshot) {
     description: data.description || "",
     price: data.price,
     image: data.image || null,
+    available: data.available !== false,
+    discount: Number.isFinite(data.discount) ? data.discount : 0,
+    readyDays: Number.isFinite(data.readyDays) ? data.readyDays : 0,
     position: Number.isFinite(data.position) ? data.position : 0,
   }
 }
