@@ -4,12 +4,15 @@ import express from "express"
 import {
   createProduct,
   deleteProduct,
+  readCoverImage,
+  readProductImage,
   readStore,
   updateCover,
   updateProduct,
   updateWhatsapp,
 } from "./data/catalog.js"
-import { requireAuth } from "./lib/auth.js"
+import { adminSetupAvailable, loginAdmin, registerAdmin, requireAuth } from "./lib/auth.js"
+import { ensureSchema } from "./lib/db.js"
 import { sendError } from "./lib/http.js"
 import { parseCover, parseNewProduct, parseProductPatch, parseWhatsapp } from "./lib/validate.js"
 
@@ -44,12 +47,65 @@ app.get("/api/products", async (_req, res) => {
   }
 })
 
+app.get("/api/admin/setup", async (_req, res) => {
+  try {
+    await ensureSchema()
+    res.json({ available: await adminSetupAvailable() })
+  } catch (error) {
+    sendError(res, error)
+  }
+})
+
+app.post("/api/admin/setup", async (req, res) => {
+  try {
+    await ensureSchema()
+    res.status(201).json(await registerAdmin(req.body?.email, req.body?.password))
+  } catch (error) {
+    sendError(res, error)
+  }
+})
+
+app.post("/api/login", async (req, res) => {
+  try {
+    await ensureSchema()
+    res.json(await loginAdmin(String(req.body?.email || ""), String(req.body?.password || "")))
+  } catch (error) {
+    sendError(res, error)
+  }
+})
+
+app.get("/api/cover/image", async (_req, res) => {
+  try {
+    const image = await readCoverImage()
+    if (!image) {
+      res.status(404).end()
+      return
+    }
+    res.set("Content-Type", "image/jpeg")
+    res.set("Cache-Control", "public, max-age=86400")
+    res.send(image)
+  } catch (error) {
+    sendError(res, error)
+  }
+})
+
+app.get("/api/products/:id/image", async (req, res) => {
+  try {
+    const image = await readProductImage(req.params.id)
+    if (!image) {
+      res.status(404).end()
+      return
+    }
+    res.set("Content-Type", "image/jpeg")
+    res.set("Cache-Control", "public, max-age=86400")
+    res.send(image)
+  } catch (error) {
+    sendError(res, error)
+  }
+})
+
 app.get("/api/me", requireAuth, (req, res) => {
-  res.json({
-    email: req.user.email,
-    role: req.user.role,
-    storeId: req.user.storeId,
-  })
+  res.json({ email: req.user.email })
 })
 
 app.put("/api/whatsapp", requireAuth, async (req, res) => {

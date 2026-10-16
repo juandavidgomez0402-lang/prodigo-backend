@@ -1,128 +1,195 @@
 import fs from "node:fs"
 import path from "node:path"
-import { db, STORE_ID } from "../lib/firebaseAdmin.js"
+import { ensureSchema, query } from "../lib/db.js"
 import { HttpError } from "../lib/http.js"
 import { makeId } from "../lib/validate.js"
 import { seed } from "./seed.js"
 
-function storeRef() {
-  return db().collection("stores").doc(STORE_ID)
+const STORE_ID = "prodigo"
+
+function toBytes(dataUrl) {
+  if (!dataUrl) return null
+  const encoded = String(dataUrl).split(",")[1] || ""
+  return Buffer.from(encoded, "base64")
 }
 
-function productsRef() {
-  return storeRef().collection("products")
+function mediaPath(base, updated) {
+  const version = updated ? new Date(updated).getTime() : 0
+  return `${base}?v=${version}`
 }
 
 export async function readStore() {
   await ensureStore()
-  const storeSnapshot = await storeRef().get()
-  const productsSnapshot = await productsRef().get()
-  const products = productsSnapshot.docs
-    .map(toProduct)
-    .sort((a, b) => a.position - b.position)
-    .map(({ position, ...product }) => product)
+  const storeResult = await query(
+    `SELECT name, whatsapp, cover_title, cover_subtitle, cover_focus_x, cover_focus_y, cover_updated,
+            (cover_image IS NOT NULL) AS has_cover
+     FROM store_settings WHERE id = $1`,
+    [STORE_ID],
+  )
+  const store = storeResult.rows[0]
+  const productsResult = await query(
+    `SELECT id, name, detail, description, price, available, discount, ready_days, position, image_updated,
+            (image IS NOT NULL) AS has_image
+     FROM products ORDER BY position, name`,
+  )
+  return {
+    cover: {
+      title: store.cover_title,
+      subtitle: store.cover_subtitle,
+      image: store.has_cover ? mediaPath("/api/cover/image", store.cover_updated) : null,
+      focusX: store.cover_focus_x,
+      focusY: store.cover_focus_y,
+    },
+    products: productsResult.rows.map((product) => ({
+      id: product.id,
+      name: product.name,
+      detail: product.detail || "",
+      description: product.description || "",
+      price: product.price,
+      image: product.has_image ? mediaPath(`/api/products/${product.id}/image`, product.image_updated) : null,
+      available: product.available !== false,
+      discount: product.discount || 0,
+      readyDays: product.ready_days || 0,
+    })),
+    whatsapp: store.whatsapp || "",
+  }
+}
 
-  const data = storeSnapshot.data() || {}
-  const cover = data.cover || seed.cover
-  return { cover, products, whatsapp: data.whatsapp || "" }
+export async function readCoverImage() {
+  await ensureStore()
+  const result = await query("SELECT cover_image FROM store_settings WHERE id = $1", [STORE_ID])
+  return result.rows[0]?.cover_image || null
+}
+
+export async function readProductImage(id) {
+  await ensureStore()
+  const result = await query("SELECT image FROM products WHERE id = $1", [id])
+  return result.rows[0]?.image || null
 }
 
 export async function updateWhatsapp(whatsapp) {
   await ensureStore()
-  await storeRef().update({ whatsapp })
+  await query("UPDATE store_settings SET whatsapp = $1 WHERE id = $2", [whatsapp, STORE_ID])
   return readStore()
 }
 
 export async function updateCover({ image, focusX, focusY }) {
   await ensureStore()
-  await storeRef().update({
-    "cover.image": image,
-    "cover.focusX": focusX,
-    "cover.focusY": focusY,
-  })
+  if (image === undefined) {
+    await query(
+      "UPDATE store_settings SET cover_focus_x = $1, cover_focus_y = $2 WHERE id = $3",
+      [focusX, focusY, STORE_ID],
+    )
+  } else {
+    await query(
+      `UPDATE store_settings
+       SET cover_image = $1, cover_focus_x = $2, cover_focus_y = $3, cover_updated = now()
+       WHERE id = $4`,
+      [toBytes(image), focusX, focusY, STORE_ID],
+    )
+  }
   return readStore()
 }
 
 export async function createProduct(input) {
   await ensureStore()
-  const current = await productsRef().get()
-  const products = current.docs.map(toProduct)
-  const id = makeId(input.name, products)
-  const position = products.reduce((max, product) => Math.max(max, product.position), -1) + 1
-  await productsRef().doc(id).set({
-    name: input.name,
-    detail: input.detail,
-    description: input.description,
-    price: input.price,
-    image: input.image,
-    available: input.available !== false,
-    discount: input.discount || 0,
-    readyDays: input.readyDays || 0,
-    position,
-  })
+  const current = await query("SELECT id FROM products")
+  const id = makeId(input.name, current.rows)
+  const position = await query("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM products")
+  await query(
+    `INSERT INTO products
+      (id, name, detail, description, price, image, available, discount, ready_days, position)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      id,
+      input.name,
+      input.detail,
+      input.description,
+      input.price,
+      toBytes(input.image),
+      input.available !== false,
+      input.discount || 0,
+      input.readyDays || 0,
+      position.rows[0].next,
+    ],
+  )
   return readStore()
 }
 
 export async function updateProduct(id, input) {
-  const ref = productsRef().doc(id)
-  const snapshot = await ref.get()
-  if (!snapshot.exists) {
-    throw new HttpError(404, "No se encontró el producto")
+  const existing = await query("SELECT id FROM products WHERE id = $1", [id])
+  if (!existing.rowCount) throw new HttpError(404, "No se encontró el producto")
+
+  const values = [
+    input.name,
+    input.detail,
+    input.description,
+    input.price,
+    input.available !== false,
+    input.discount || 0,
+    input.readyDays || 0,
+  ]
+  let sql = `UPDATE products
+    SET name = $1, detail = $2, description = $3, price = $4,
+        available = $5, discount = $6, ready_days = $7`
+  if (input.image !== undefined) {
+    values.push(toBytes(input.image))
+    sql += `, image = $${values.length}, image_updated = now()`
   }
-  await ref.update({
-    name: input.name,
-    detail: input.detail,
-    description: input.description,
-    price: input.price,
-    image: input.image,
-    available: input.available !== false,
-    discount: input.discount || 0,
-    readyDays: input.readyDays || 0,
-  })
+  values.push(id)
+  sql += ` WHERE id = $${values.length}`
+  await query(sql, values)
   return readStore()
 }
 
 export async function deleteProduct(id) {
-  const ref = productsRef().doc(id)
-  const snapshot = await ref.get()
-  if (!snapshot.exists) {
-    throw new HttpError(404, "No se encontró el producto")
-  }
-  await ref.delete()
+  const result = await query("DELETE FROM products WHERE id = $1", [id])
+  if (!result.rowCount) throw new HttpError(404, "No se encontró el producto")
   return readStore()
 }
 
 async function ensureStore() {
-  const snapshot = await storeRef().get()
-  if (snapshot.exists) return
+  await ensureSchema()
+  const existing = await query("SELECT id FROM store_settings WHERE id = $1", [STORE_ID])
+  if (existing.rowCount) return
 
   const initial = localCatalog()
-  await storeRef().set({
-    name: "Pródigo",
-    slug: STORE_ID,
-    cover: {
-      title: initial.cover?.title || seed.cover.title,
-      subtitle: initial.cover?.subtitle || seed.cover.subtitle,
-      image: initial.cover?.image || null,
-    },
-    whatsapp: initial.whatsapp || "",
-  })
+  const cover = initial.cover || seed.cover
+  await query(
+    `INSERT INTO store_settings
+      (id, name, whatsapp, cover_title, cover_subtitle, cover_image, cover_focus_x, cover_focus_y)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
+      STORE_ID,
+      "Pródigo",
+      initial.whatsapp || "",
+      cover.title || seed.cover.title,
+      cover.subtitle || seed.cover.subtitle,
+      toBytes(cover.image),
+      Number.isFinite(cover.focusX) ? cover.focusX : 50,
+      Number.isFinite(cover.focusY) ? cover.focusY : 50,
+    ],
+  )
 
-  const batch = db().batch()
-  initial.products.forEach((product, index) => {
-    batch.set(productsRef().doc(product.id), {
-      name: product.name,
-      detail: product.detail || "",
-      description: product.description || "",
-      price: product.price,
-      image: product.image || null,
-      available: product.available !== false,
-      discount: product.discount || 0,
-      readyDays: product.readyDays || 0,
-      position: index,
-    })
-  })
-  await batch.commit()
+  for (const [index, product] of (initial.products || seed.products).entries()) {
+    await query(
+      `INSERT INTO products
+        (id, name, detail, description, price, image, available, discount, ready_days, position)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        product.id,
+        product.name,
+        product.detail || "",
+        product.description || "",
+        product.price,
+        toBytes(product.image),
+        product.available !== false,
+        product.discount || 0,
+        product.readyDays || 0,
+        index,
+      ],
+    )
+  }
 }
 
 function localCatalog() {
@@ -132,21 +199,5 @@ function localCatalog() {
     return JSON.parse(fs.readFileSync(file, "utf8"))
   } catch {
     return seed
-  }
-}
-
-function toProduct(snapshot) {
-  const data = snapshot.data()
-  return {
-    id: snapshot.id,
-    name: data.name,
-    detail: data.detail || "",
-    description: data.description || "",
-    price: data.price,
-    image: data.image || null,
-    available: data.available !== false,
-    discount: Number.isFinite(data.discount) ? data.discount : 0,
-    readyDays: Number.isFinite(data.readyDays) ? data.readyDays : 0,
-    position: Number.isFinite(data.position) ? data.position : 0,
   }
 }
